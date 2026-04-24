@@ -1,0 +1,98 @@
+
+
+services:
+  # ==========================================
+  # BLOQUE 0: Broker MQTT (Eclipse Mosquitto)
+  # ==========================================
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: soil_validator_broker
+    restart: unless-stopped
+    ports:
+      - "1883:1883" # Puerto estándar MQTT para recibir datos de la sonda
+      - "9001:9001" # WebSockets para MQTT (opcional, útil para debug)
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+    networks:
+      - sensor_network
+
+  # ==========================================
+  # BLOQUE 1: Base de Datos (PostgreSQL)
+  # ==========================================
+  db:
+    image: postgres:15-alpine
+    container_name: soil_validator_db
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - sensor_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================
+  # BLOQUE 2: Backend (Express.js + MQTT Client)
+  # ==========================================
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: soil_validator_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${PORT}:${PORT}"
+    volumes:
+      - ./backend/src:/app/src
+    depends_on:
+      db:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    networks:
+      - sensor_network
+
+  # ==========================================
+  # BLOQUE 3: Frontend (React.js)
+  # ==========================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: soil_validator_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    depends_on:
+      - backend
+    networks:
+      - sensor_network
+
+# ==========================================
+# Configuración de Redes y Volúmenes
+# ==========================================
+networks:
+  sensor_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    name: soil_validator_db_data
+  mosquitto_data:
+    name: soil_validator_mosquitto_data
+  mosquitto_log:
+    name: soil_validator_mosquitto_log
