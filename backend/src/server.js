@@ -11,32 +11,61 @@ const {
 } = require('./stats');
 
 const app = express();
-app.use(cors());
+
+// Lista de orígenes permitidos: en producción, define FRONTEND_URL en Render
+// (puedes pasar varias URLs separadas por coma si lo necesitas)
+const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:3000')
+    .split(',')
+    .map(s => s.trim());
+
+app.use(cors({ origin: allowedOrigins }));
 app.use(express.json());
 
 // 1. Crear el servidor HTTP y envolverlo con Socket.io
 const server = http.createServer(app);
 const io = new Server(server, {
-    cors: { origin: "http://localhost:3000", methods: ["GET", "POST"] }
+    cors: { origin: allowedOrigins, methods: ["GET", "POST"] }
 });
-
-const pool = new Pool({
-    user: process.env.POSTGRES_USER,
-    host: process.env.DB_HOST,
-    database: process.env.POSTGRES_DB,
-    password: process.env.POSTGRES_PASSWORD,
-    port: process.env.DB_PORT,
-});
+// Configuración dinámica: Si existe DATABASE_URL (Producción), úsala. 
+// Si no, usa las variables individuales (Desarrollo local con Docker).
+const pool = new Pool(
+    process.env.DATABASE_URL 
+    ? { 
+        connectionString: process.env.DATABASE_URL,
+        ssl: { rejectUnauthorized: false } // Requerido por Render para conexiones seguras
+      }
+    : {
+        user: process.env.POSTGRES_USER,
+        host: process.env.DB_HOST,
+        database: process.env.POSTGRES_DB,
+        password: process.env.POSTGRES_PASSWORD,
+        port: process.env.DB_PORT,
+      }
+);
 
 // 2. Conectar al Broker MQTT (ej. un contenedor Mosquitto local o en la nube)
 // Nota: Necesitarás un Broker MQTT corriendo.
-const mqttClient = mqtt.connect('mqtt://mosquitto:1883');
+// Opciones de conexión MQTT (HiveMQ requiere usuario y contraseña)
+const mqttOptions = {
+    username: process.env.MQTT_USERNAME || undefined,
+    password: process.env.MQTT_PASSWORD || undefined,
+    // Importante: HiveMQ Cloud exige un ClientId único o a veces rechaza conexiones
+    clientId: 'soil-backend-' + Math.random().toString(16).substr(2, 8)
+};
+
+// Conectar usando la URL de las variables de entorno (o por defecto el mosquitto local)
+// Nota: HiveMQ usa 'mqtts://' (seguro) en el puerto 8883
+const brokerUrl = process.env.MQTT_BROKER_URL || 'mqtt://mosquitto:1883';
+const mqttClient = mqtt.connect(brokerUrl, mqttOptions);
 
 mqttClient.on('connect', () => {
-    console.log('Backend conectado al Broker MQTT');
-    // Suscribirse al tópico donde la sonda publica los datos
+    console.log(`Backend conectado al Broker MQTT en: ${brokerUrl}`);
+    // Suscribirse al tópico exacto de la sonda
     mqttClient.subscribe('finca/sondas/suelo/recepcion');
 });
+
+// ... (El resto de tu código mqttClient.on('message', ...) se queda exactamente igual)
+
 
 // 3. Escuchar los mensajes MQTT entrantes
 mqttClient.on('message', async (topic, message) => {
